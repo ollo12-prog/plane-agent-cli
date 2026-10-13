@@ -80,7 +80,8 @@ export function createTracker({ fetchFn = fetch, env = process.env, cachePath, s
   const issueKey = (r) => `${prefix}-${r.sequence_id}`
   const SKIP_LABELS = csv(env.PLANE_SKIP_LABELS)
   const CLOSED_STATES = env.PLANE_CLOSED_STATES === undefined ? ['Done', 'Cancelled'] : csv(env.PLANE_CLOSED_STATES)
-  const cap = env.PLANE_COMMENT_CAP ? Number(env.PLANE_COMMENT_CAP) : COMMENT_CAP
+  const capRaw = env.PLANE_COMMENT_CAP?.trim() // blank must mean "default", not Number('  ') === 0 (no cap)
+  const cap = capRaw ? Number(capRaw) : COMMENT_CAP
   if (!Number.isInteger(cap) || cap < 0) throw new Error('PLANE_COMMENT_CAP must be a non-negative integer (0 = no cap)')
   const alias = env.PLANE_MODULE_ALIAS ? new RegExp(env.PLANE_MODULE_ALIAS, 'g') : null
   // one id cache per endpoint/workspace/project/prefix, outside any repo by default
@@ -191,12 +192,15 @@ export function createTracker({ fetchFn = fetch, env = process.env, cachePath, s
     const id = await issueId(k)
     await api('PATCH', `/work-items/${id}/`, body)
     const row = await readIssue(k)
+    checkFields(k, row, body)
+    return row
+  }
+  function checkFields(k, row, body) {
     for (const [field, value] of Object.entries(body)) {
       const got = field === 'description_html' ? htmlToText(row.description_html) : Array.isArray(value) ? (row[field] ?? []).map(idOf).sort() : idOf(row[field]) ?? row[field]
       const want = field === 'description_html' ? htmlToText(value) : Array.isArray(value) ? [...value].sort() : value
       if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`${k}: ${field} read-back differs`)
     }
-    return row
   }
 
   const t = {
@@ -209,6 +213,7 @@ export function createTracker({ fetchFn = fetch, env = process.env, cachePath, s
       return Promise.all(selected.map(summary))
     },
     async ready({ label } = {}) {
+      if (label) await resolve('labels', label) // a typo must fail, not look like an empty queue
       const todo = await resolve('states', 'Todo')
       const closed = await Promise.all(CLOSED_STATES.map((s) => resolve('states', s)))
       const rows = await list(`/work-items/?fields=${SUMMARY_FIELDS}`)
@@ -287,14 +292,19 @@ export function createTracker({ fetchFn = fetch, env = process.env, cachePath, s
       }
       const mod = module ? await resolve('modules', module) : null
       const made = await api('POST', '/work-items/', body)
-      if (mod) {
-        try {
+      if (!made?.id || made.sequence_id == null) throw new Error('create: response has no issue id; check the tracker before retrying')
+      const key = issueKey(made)
+      // name the created key in every failure past this point, so a retry does not duplicate it
+      try {
+        checkFields(key, await api('GET', `/work-items/${made.id}/`), body)
+        if (mod) {
           await api('POST', `/modules/${mod}/module-issues/`, { issues: [made.id] })
-        } catch (e) {
-          throw new Error(`created ${issueKey(made)} but the module attach failed: ${e.message}`)
+          if (!(await list(`/modules/${mod}/module-issues/`)).some((r) => idOf(r) === made.id)) throw new Error('module read-back differs')
         }
+      } catch (e) {
+        throw new Error(`created ${key} but ${e.message}`)
       }
-      return { ok: true, key: issueKey(made), id: made.id }
+      return { ok: true, key, id: made.id }
     },
 
     async update(k, { name, state, priority, labels, desc, parent, assignees, start, due } = {}) {

@@ -100,7 +100,7 @@ function fakeFetch(w) {
     if (method === 'GET' && path === '/archived-work-items/') return paged(w.items.filter((r) => !!r.archived_at))
     if (method === 'POST' && path === '/work-items/') {
       const n = w.items.length + 1
-      const it = { id: `i-${n}`, sequence_id: n, name: body.name, state: body.state, priority: body.priority, labels: body.labels, description_html: body.description_html ?? '', description_stripped: '' }
+      const it = { id: `i-${n}`, sequence_id: n, name: body.name, state: body.state, priority: body.priority, labels: w.dropLabelsOnCreate ? [] : body.labels, description_html: body.description_html ?? '', description_stripped: '' }
       w.items.push(it)
       return reply(201, it)
     }
@@ -128,7 +128,7 @@ function fakeFetch(w) {
     }
     // live Plane: module rows are the issues themselves; DELETE names the issue in the path
     if ((m = /^\/modules\/([^/]+)\/module-issues\/(?:([^/]+)\/)?$/.exec(path))) {
-      if (method === 'POST' && !m[2]) w.memberships[m[1]] = [...new Set([...(w.memberships[m[1]] ?? []), ...body.issues])]
+      if (method === 'POST' && !m[2]) { if (!w.ignoreModuleAttach) w.memberships[m[1]] = [...new Set([...(w.memberships[m[1]] ?? []), ...body.issues])] }
       else if (method === 'DELETE' && m[2]) {
         if (!(w.memberships[m[1]] ?? []).includes(m[2])) return reply(404, { error: 'not in module' })
         w.memberships[m[1]] = w.memberships[m[1]].filter((x) => x !== m[2])
@@ -193,6 +193,10 @@ describe('plane-agent: ready', () => {
     const rows = await t.ready()
     expect(rows.map((r) => r.key)).toEqual(['TST-2', 'TST-9', 'TST-5', 'TST-12', 'TST-1', 'TST-6'])
     expect(Object.keys(rows[0])).toEqual(['key', 'name', 'priority', 'labels'])
+  })
+  it('an unknown --label fails instead of returning an empty queue', async () => {
+    const { t } = setup()
+    await expect(t.ready({ label: 'no-such-label' })).rejects.toThrow('unknown label "no-such-label"')
   })
   it('drops art and blocked:owner issues', async () => {
     const { t } = setup()
@@ -293,6 +297,16 @@ describe('plane-agent: state / label / create', () => {
     const { t } = setup()
     await expect(t.create({ name: 'N', module: 'P99' })).rejects.toThrow('unknown module "P99"')
   })
+  it('create reads the issue back: a server that drops a field is a failure naming the key', async () => {
+    const { t, w } = setup()
+    w.dropLabelsOnCreate = true
+    await expect(t.create({ name: 'New', labels: ['rules'] })).rejects.toThrow('created TST-13 but TST-13: labels read-back differs')
+  })
+  it('create reads the module membership back: an ignored attach is a failure naming the key', async () => {
+    const { t, w } = setup()
+    w.ignoreModuleAttach = true
+    await expect(t.create({ name: 'New', module: 'P10' })).rejects.toThrow('created TST-13 but module read-back differs')
+  })
 })
 
 describe('plane-agent: comment', () => {
@@ -334,8 +348,9 @@ describe('plane-agent: name maps and issue cache', () => {
     const w2 = world()
     const t2 = createTracker({ fetchFn: fakeFetch(w2), env: envWith(), cachePath })
     await t2.state('TST-5', 'Done')
-    expect(count(w2, 'GET /work-items/')).toBe(0)
-    expect(w.calls.length).toBeGreaterThan(0)
+    const lookups = (x) => x.calls.filter((c) => c === 'GET /api/v1/workspaces/ws/work-items/TST-5/').length
+    expect(lookups(w)).toBe(1)
+    expect(lookups(w2)).toBe(0)
   })
   it('names are fetched once per process, however many lookups', async () => {
     const { t, w } = setup()
@@ -706,6 +721,10 @@ describe('plane-agent: PLANE_COMMENT_CAP', () => {
   it('a larger cap lets a long comment through', async () => {
     const t = createTracker({ fetchFn: fakeFetch(world()), env: envWith({ PLANE_COMMENT_CAP: '1000' }), cachePath: fresh() })
     await expect(t.comment('TST-5', longComment)).resolves.toMatchObject({ ok: true })
+  })
+  it('a blank value keeps the default cap instead of turning it off', async () => {
+    const t = createTracker({ fetchFn: fakeFetch(world()), env: envWith({ PLANE_COMMENT_CAP: '   ' }), cachePath: fresh() })
+    await expect(t.comment('TST-5', longComment)).rejects.toThrow(`cap is ${COMMENT_CAP}`)
   })
   for (const bad of ['-1', '1.5', 'abc']) {
     it(`${bad} throws at construction`, () => {
