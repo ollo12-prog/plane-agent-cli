@@ -1,0 +1,19 @@
+{
+  "name": "plane-agent-cli",
+  "version": "0.1.0",
+  "description": "Plane (plane.so) CLI for AI coding agents: names in, compact JSON out, every write read back.",
+  "type": "module",
+  "bin": { "plane-agent": "plane-agent.mjs" },
+  "exports": { ".": { "types": "./plane-agent.d.mts", "default": "./plane-agent.mjs" } },
+  "files": ["plane-agent.mjs", "plane-agent.d.mts"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "vitest run",
+    "test:falsify": "node scripts/falsify.mjs"
+  },
+  "devDependencies": { "vitest": "^4.1.10" },
+  "keywords": ["plane", "plane.so", "cli", "ai-agents", "claude-code", "codex", "issue-tracker"],
+  "repository": { "type": "git", "url": "git+https://github.com/ollo12-prog/plane-agent-cli.git" },
+  "author": "Oleksandr Lomakin",
+  "license": "MIT"
+}
